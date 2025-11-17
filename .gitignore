@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+.vscode/
+
+__pycache__/
+*.pyc
+
+.env
+
+db_data/
+chroma_data/
+uploads/

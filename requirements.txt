@@ -1,0 +1,16 @@
+# Core Framework
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-multipart
+
+# Database Driver
+pymysql # For MySQL
+
+# Auth
+passlib==1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]
+
+# Pydantic
+pydantic[email] # For email validation

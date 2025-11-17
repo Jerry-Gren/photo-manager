@@ -1,0 +1,33 @@
+services:
+  # FastAPI
+  backend:
+    build: .  # Build from the Dockerfile in the current directory
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - ./.env
+    volumes:
+      - ./app:/app/app  # Mount local 'app' dir for hot-reloading
+    ports:
+      - "8000:8000" # Expose port 8000 on host, mapping to 8000 in container
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # MySQL
+  db:
+    image: mysql:8.0
+    env_file:
+      - ./.env
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306" # Expose MySQL port for local debugging
+    # Add healthcheck to ensure backend waits for DB to be ready
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u$$MYSQL_USER", "-p$$MYSQL_PASSWORD"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  db_data: # Persistent volume for database data
