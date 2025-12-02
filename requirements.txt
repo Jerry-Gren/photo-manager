@@ -14,3 +14,10 @@ python-jose[cryptography]
 
 # Pydantic
 pydantic[email] # For email validation
+
+# Image Processing
+Pillow
+
+# Async Task Queue
+celery
+redis

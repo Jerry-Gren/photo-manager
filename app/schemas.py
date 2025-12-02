@@ -40,3 +40,45 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     """Pydantic schema for the data stored in the JWT payload."""
     sub: str | None = None
+
+# Image Schemas
+class ImageBase(BaseModel):
+    """Base Pydantic schema for image properties."""
+    title: str | None = None
+    description: str | None = None
+
+class ImageCreate(ImageBase):
+    """Schema for creating an image (metadata only, file handled separately)."""
+    pass
+
+class Image(ImageBase):
+    """
+    Pydantic schema for reading image data (API response).
+    Includes fields that might be populated asynchronously.
+    """
+    id: int
+    user_id: int
+    parent_image_id: int | None = None
+    root_image_id: int | None = None
+    
+    # File Info
+    original_filename: str
+    mime_type: str
+    file_size: int
+    
+    # Status
+    status: str  # 'processing', 'active', etc.
+    processing_error: str | None = None
+    uploaded_at: datetime
+    
+    # Derived Info
+    taken_at: datetime | None = None
+    location_name: str | None = None
+    resolution_width: int | None = None
+    resolution_height: int | None = None
+    
+    # Flags
+    rag_indexed: bool
+
+    class Config:
+        from_attributes = True

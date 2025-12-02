@@ -7,7 +7,7 @@ and includes API routers.
 
 from fastapi import FastAPI
 from .database import engine, Base
-from .routers import auth
+from .routers import auth, images
 
 # Create all database tables (if they don't exist)
 # This will create tbl_user based on app/models.py
@@ -26,8 +26,8 @@ app = FastAPI(
 )
 
 # Include the authentication router
-# All routes from app/routers/auth.py will be added
 app.include_router(auth.router)
+app.include_router(images.router)
 
 # Root endpoint for health check
 @app.get("/")
