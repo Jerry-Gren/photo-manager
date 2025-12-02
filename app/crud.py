@@ -137,8 +137,25 @@ def remove_tag_from_image(db: Session, image_id: int, tag_id: int):
     return image
 
 def get_all_tags(db: Session):
-    """Returns all tags."""
+    """
+    [DEPRECATED] Returns all tags.
+    WARNING: Potential privacy leak in multi-user environments.
+    Use get_tags_by_user instead.
+    """
     return db.query(models.Tag).all()
+
+def get_tags_by_user(db: Session, user_id: int):
+    """
+    Returns only tags that are associated with images owned by the specific user.
+    """
+    return (
+        db.query(models.Tag)
+        .join(models.Tag.images)
+        .filter(models.Image.user_id == user_id)
+        .filter(models.Image.status == 'active')
+        .distinct()
+        .all()
+    )
 
 # Advanced Image Search
 def get_images(

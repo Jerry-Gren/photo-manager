@@ -22,5 +22,6 @@ async def read_tags(
     """
     Get all available tags in the system.
     Used for frontend autocomplete/filter dropdowns.
+    This only returns tags that are currently linked to the user's own images.
     """
-    return crud.get_all_tags(db)
+    return crud.get_tags_by_user(db, user_id=current_user.id)

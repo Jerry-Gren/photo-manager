@@ -51,6 +51,16 @@ services:
     ports:
       - "6379:6379"
 
+  # ChromaDB
+  vectordb:
+    image: chromadb/chroma:0.4.22
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "8000" # No need to expose
+    environment:
+      - IS_PERSISTENT=TRUE
 volumes:
   db_data: # Persistent volume for database data
   uploads: # Persistent volume for uploaded files
+  chroma_data: # Persistent volume for chromadb data

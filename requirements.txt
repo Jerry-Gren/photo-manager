@@ -21,3 +21,8 @@ Pillow
 # Async Task Queue
 celery
 redis
+
+# AI & RAG
+sentence-transformers
+chromadb
+httpx
