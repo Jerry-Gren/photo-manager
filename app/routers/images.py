@@ -7,10 +7,10 @@ Handles file uploads, storage, and initiates asynchronous processing.
 import os
 import shutil
 import uuid
-from typing import Annotated
+from typing import Annotated, List, Optional
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -143,3 +143,85 @@ async def get_image_thumbnail(
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
     return FileResponse(image.thumbnail_path, media_type="image/jpeg")
+
+@router.get("", response_model=List[schemas.Image])
+async def read_images(
+    tags: Optional[List[str]] = Query(None, description="Filter by tag names"),
+    status: Optional[str] = Query("active", description="Filter by status (processing, active, archived, failed, active_deleted, archived_deleted). Pass empty to see all."),
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    sort_by: str = "uploaded_at",
+    sort_order: str = "desc",
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Search images with complex filters.
+    Args:
+        tags: List of tag names. Image must have all specified tags.
+        start_date/end_date: Filter by capture time.
+        sort_by: Field to sort by (e.g., 'taken_at', 'uploaded_at').
+    Returns:
+        A list of image metadata objects matching the search criteria,
+        including their associated tags and status.
+    """
+    return crud.get_images(
+        db=db,
+        user_id=current_user.id,
+        skip=skip,
+        limit=limit,
+        tags=tags,
+        start_date=start_date,
+        end_date=end_date,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        status=status
+    )
+
+@router.post("/{image_id}/tags", status_code=status.HTTP_201_CREATED)
+async def add_tag_to_image(
+    image_id: int,
+    tag: schemas.TagCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Add a custom user tag to an image.
+    """
+    # 1. Check ownership
+    image = crud.get_image(db, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    if image.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this image")
+        
+    # 2. Add tag
+    crud.add_tag_to_image(db, image_id, tag.name, tag_type="user")
+    
+    return {"message": "Tag added successfully"}
+
+@router.delete("/{image_id}/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_tag_from_image(
+    image_id: int,
+    tag_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Remove a tag from an image.
+    """
+    # 1. Check ownership
+    image = crud.get_image(db, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+        
+    if image.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this image")
+
+    # 2. Remove tag
+    crud.remove_tag_from_image(db, image_id, tag_id)
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

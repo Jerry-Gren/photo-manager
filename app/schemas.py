@@ -41,6 +41,22 @@ class TokenData(BaseModel):
     """Pydantic schema for the data stored in the JWT payload."""
     sub: str | None = None
 
+# Tag Schemas
+class TagBase(BaseModel):
+    name: str
+
+class TagCreate(TagBase):
+    """Schema for creating a user-defined tag."""
+    pass
+
+class Tag(TagBase):
+    """Schema for reading a tag."""
+    id: int
+    tag_type: str # 'user', 'derived_time', 'ai_generated', etc.
+
+    class Config:
+        from_attributes = True
+
 # Image Schemas
 class ImageBase(BaseModel):
     """Base Pydantic schema for image properties."""
@@ -79,6 +95,9 @@ class Image(ImageBase):
     
     # Flags
     rag_indexed: bool
+
+    # Tags
+    tags: list[Tag] = []
 
     class Config:
         from_attributes = True
