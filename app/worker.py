@@ -7,6 +7,7 @@ and backend connections based on environment variables.
 
 import os
 from celery import Celery
+from celery.schedules import crontab
 
 # Load configuration from environment variables
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://broker:6379/0")
@@ -27,6 +28,14 @@ celery_app.conf.update(
     timezone="Asia/Shanghai",
     enable_utc=True,
 )
+
+# Celery Beat Configuration
+celery_app.conf.beat_schedule = {
+    "run-rag-indexer-every-minute": {
+        "task": "app.tasks.build_rag_index",
+        "schedule": 60.0,  # run per 60 secs
+    },
+}
 
 # Auto-discover tasks in the 'app.tasks' module
 celery_app.autodiscover_tasks(["app.tasks"])

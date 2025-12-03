@@ -15,6 +15,8 @@ services:
         condition: service_healthy
       broker:
         condition: service_started
+      vectordb:
+        condition: service_healthy
 
   # Celery Worker
   worker:
@@ -22,13 +24,31 @@ services:
     command: celery -A app.worker.celery_app worker --loglevel=info
     env_file:
       - ./.env
+    environment:
+      - ANONYMIZED_TELEMETRY=False
     volumes:
       - ./app:/app/app
       - uploads:/app/uploads
     depends_on:
-      - backend
-      - broker # Wait for Redis
+      backend:
+        condition: service_started
+      broker:
+        condition: service_started
+      vectordb:
+        condition: service_healthy
 
+  # Celery Beat
+  beat:
+    build: .
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    env_file:
+      - ./.env
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      broker:
+        condition: service_started
+    
   # MySQL
   db:
     image: mysql:8.0
@@ -53,13 +73,19 @@ services:
 
   # ChromaDB
   vectordb:
-    image: chromadb/chroma:0.4.22
+    image: chromadb/chroma:0.5.3
     volumes:
       - chroma_data:/chroma/chroma
     ports:
-      - "8000" # No need to expose
+      - "8001:8000"
     environment:
       - IS_PERSISTENT=TRUE
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   db_data: # Persistent volume for database data
   uploads: # Persistent volume for uploaded files

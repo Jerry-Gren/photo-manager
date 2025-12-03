@@ -23,6 +23,8 @@ celery
 redis
 
 # AI & RAG
-sentence-transformers
-chromadb
+chromadb==0.5.3
 httpx
+
+# Geo
+reverse_geocoder

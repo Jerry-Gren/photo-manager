@@ -45,9 +45,10 @@ async def upload_image(
     1. Validates file type.
     2. Generates a secure UUID filename.
     3. Saves the file to the 'originals' directory.
-    4. Creates a DB record with status='processing'.
-    5. Triggers a Celery task for background processing.
-    6. Returns 202 Accepted immediately.
+    4. Set default title if not provided
+    5. Creates a DB record with status='processing'.
+    6. Triggers a Celery task for background processing.
+    7. Returns 202 Accepted immediately.
 
     Args:
         file: The image file stream.
@@ -81,7 +82,13 @@ async def upload_image(
     # Calculate file size
     file_size = os.path.getsize(storage_path)
 
-    # 4. Create DB record
+    # 4. Set default title
+    final_title = title
+    if not final_title:
+        base_name = os.path.basename(file.filename)
+        final_title, _ = os.path.splitext(base_name)
+
+    # 5. Create DB record
     db_image = models.Image(
         user_id=current_user.id,
         original_filename=file.filename,
@@ -95,7 +102,7 @@ async def upload_image(
     
     created_image = crud.create_image_placeholder(db=db, image=db_image)
 
-    # 5. Trigger Celery Task
+    # 6. Trigger Celery Task
     # passing the ID of the newly created image record
     tasks.process_image_core.delay(created_image.id)
 

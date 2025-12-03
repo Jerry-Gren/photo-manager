@@ -28,6 +28,19 @@ REFRESH_TOKEN_EXPIRE_DAYS=7
 # SQLAlchemy Database URL
 # Format: "mysql+pymysql://USER:PASSWORD@HOST/DB_NAME"
 DATABASE_URL=mysql+pymysql://root:<password>@db/photodb
+
+# ChromaDB Config
+CHROMA_DB_HOST=vectordb
+CHROMA_DB_PORT=8000
+CHROMA_COLLECTION_NAME=image_gallery
+
+# LLM Config
+LLM_API_KEY=sk-xxx
+LLM_API_BASE=...
+LLM_MODEL=gpt-4o
+
+# Hugging Face Mirror
+HF_ENDPOINT=https://hf-mirror.com
 ```
 
 This must be done before you launch the project.
