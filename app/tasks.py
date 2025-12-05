@@ -539,7 +539,7 @@ def enrich_ai_models(self, image_id: int, lat: float = None, lon: float = None):
             # Fallback to rough location if AI failed to identify
             image.location_name = rough_location
             crud.add_tag_to_image(db, image_id, rough_location, "exif_location")
-            logger.info(f"[AI] Fall back to use rough location: {loc_zh}")
+            logger.info(f"[AI] Fall back to use rough location: {rough_location}")
             
         db.commit()
         logger.info(f"[AI] Analysis complete. Caption: {result_json.get('caption')}. Tags: {result_json.get('tags')}. Location: {result_json.get('location_zh')}")
