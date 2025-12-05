@@ -13,8 +13,9 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from PIL import Image as PILImage, ImageOps
 
-from .. import auth, crud, models, schemas
+from .. import auth, crud, models, schemas, ai
 from ..database import get_db
 from .. import tasks 
 
@@ -230,5 +231,167 @@ async def remove_tag_from_image(
 
     # 2. Remove tag
     crud.remove_tag_from_image(db, image_id, tag_id)
+    
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+@router.post("/{image_id}/edit", status_code=status.HTTP_202_ACCEPTED, response_model=schemas.Image)
+async def edit_image(
+    image_id: int,
+    edit_req: schemas.ImageEditRequest,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Performs non-destructive editing on an image.
+
+    Flow:
+    1. Validate ownership.
+    2. Load original image from disk.
+    3. Apply Crop/Filter using Pillow.
+    4. Save as a new file.
+    5. Archive the old DB record (status='archived').
+    6. Remove old record from ChromaDB (to prevent searching outdated content).
+    7. Create a new DB record (status='processing', parent=old_id).
+    8. Trigger Celery task for the new image.
+    """
+    # 1. Validation
+    original_db_image = crud.get_image(db, image_id)
+    if not original_db_image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if original_db_image.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to modify this image")
+    
+    if not os.path.exists(original_db_image.storage_path):
+        raise HTTPException(status_code=404, detail="Original file missing")
+
+    # 2. Process Image
+    try:
+        with PILImage.open(original_db_image.storage_path) as img:
+            # Handle orientation first to ensure crop coordinates match visual
+            img = ImageOps.exif_transpose(img)
+            
+            # Apply Crop
+            if edit_req.crop:
+                c = edit_req.crop
+                # Pillow crop: (left, top, right, bottom)
+                # Ensure coordinates are within bounds
+                left = max(0, c.x)
+                top = max(0, c.y)
+                right = min(img.width, c.x + c.width)
+                bottom = min(img.height, c.y + c.height)
+                
+                if right > left and bottom > top:
+                    img = img.crop((left, top, right, bottom))
+            
+            # Apply Simple Filters
+            if edit_req.filter == "grayscale":
+                img = ImageOps.grayscale(img)
+            # Add more filters here if needed
+            
+            # 3. Save New File
+            file_ext = os.path.splitext(original_db_image.original_filename)[1]
+            if not file_ext: file_ext = ".jpg"
+            
+            new_filename = f"{uuid.uuid4()}{file_ext}"
+            new_storage_path = os.path.join(ORIGINALS_DIR, new_filename)
+            
+            # Save
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.save(new_storage_path, quality=95)
+            
+            new_file_size = os.path.getsize(new_storage_path)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image processing failed: {e}")
+
+    # 4. Database Transaction
+    try:
+        # Archive old image
+        original_db_image.status = "archived"
+        original_db_image.rag_indexed = False
+        
+        # Create new image record
+        new_image = models.Image(
+            user_id=current_user.id,
+            original_filename=original_db_image.original_filename, # Keep original name
+            storage_path=new_storage_path,
+            mime_type="image/jpeg",
+            file_size=new_file_size,
+            status="processing",
+            parent_image_id=original_db_image.id,
+            root_image_id=original_db_image.root_image_id, # Inherit root
+            
+            # Inherit metadata
+            title=original_db_image.title,
+            description=original_db_image.description,
+            # taken_at, location will be re-parsed by Celery from EXIF (if preserved)
+        )
+        
+        # Save to DB
+        db.add(new_image)
+        db.commit()
+        db.refresh(new_image)
+        
+        # 5. Clean up Vector DB
+        try:
+            collection = ai.get_chroma_collection()
+            collection.delete(ids=[str(original_db_image.id)])
+            print(f"Removed Image {original_db_image.id} from RAG index.")
+        except Exception as e:
+            print(f"Warning: Failed to remove old vector: {e}")
+
+        # 6. Trigger Celery Task for new image
+        tasks.process_image_core.delay(new_image.id)
+        
+        return new_image
+
+    except Exception as e:
+        db.rollback()
+        # Clean up the new file if DB failed
+        if os.path.exists(new_storage_path):
+            os.remove(new_storage_path)
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+@router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_image(
+    image_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Soft deletes an image.
+
+    Flow:
+    1. Mark status as 'active_deleted' (or 'archived_deleted').
+    2. Remove from ChromaDB.
+    """
+    image = crud.get_image(db, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+        
+    if image.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this image")
+
+    # 1. Update Status
+    previous_status = image.status
+    if previous_status == 'active':
+        image.status = 'active_deleted'
+    elif previous_status == 'archived':
+        image.status = 'archived_deleted'
+    else:
+        image.status = 'active_deleted'
+    
+    image.rag_indexed = False
+    db.commit()
+
+    # 2. Remove from Vector DB
+    try:
+        collection = ai.get_chroma_collection()
+        collection.delete(ids=[str(image_id)])
+        print(f"Removed Image {image_id} from RAG index.")
+    except Exception as e:
+        # Don't fail the request just because Chroma failed, but log it
+        print(f"Warning: Failed to delete vector for {image_id}: {e}")
     
     return Response(status_code=status.HTTP_204_NO_CONTENT)

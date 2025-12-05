@@ -21,7 +21,7 @@ COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "image_gallery")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_BASE = os.getenv("LLM_API_BASE")
 # Chat Model
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-pro")
 # Embedding Model
 EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -49,10 +49,39 @@ def get_chroma_collection():
             raise e
     return _chroma_collection
 
+def generate_embedding_sync(text: str) -> list[float]:
+    """
+    Synchronous version of generate_embedding for Celery tasks.
+    """
+    if not text:
+        return []
+
+    url = f"{LLM_API_BASE}/embeddings"
+    headers = {
+        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "input": text,
+        "model": EMBEDDING_MODEL
+    }
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            # OpenAI API format: data['data'][0]['embedding']
+            return data["data"][0]["embedding"]
+    except Exception as e:
+        print(f"Embedding API Error: {e}")
+        # Return a zero-vector or raise error depending on policy.
+        # Here we raise to let Celery retry.
+        raise e
+
 async def generate_embedding(text: str) -> list[float]:
     """
     Converts text to a vector embedding using remote API.
-    Synchronous implementation for Celery tasks.
     """
     if not text:
         return []
@@ -78,7 +107,6 @@ async def generate_embedding(text: str) -> list[float]:
     except Exception as e:
         print(f"Embedding API Error: {e}")
         # Return a zero-vector or raise error depending on policy.
-        # Here we raise to let Celery retry.
         raise e
 
 # async def query_llm(prompt: str) -> str:

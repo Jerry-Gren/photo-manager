@@ -67,6 +67,17 @@ class ImageCreate(ImageBase):
     """Schema for creating an image (metadata only, file handled separately)."""
     pass
 
+class CropBox(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+class ImageEditRequest(BaseModel):
+    """Schema for image editing operations."""
+    crop: CropBox | None = None
+    filter: str | None = None # e.g., 'grayscale', 'sepia'
+
 class Image(ImageBase):
     """
     Pydantic schema for reading image data (API response).

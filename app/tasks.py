@@ -600,7 +600,7 @@ def build_rag_index():
                     rag_text = "图片"
 
                 # Generate Embedding
-                embedding = ai.generate_embedding(rag_text)
+                embedding = ai.generate_embedding_sync(rag_text)
 
                 # Upsert to ChromaDB
                 collection.upsert(
