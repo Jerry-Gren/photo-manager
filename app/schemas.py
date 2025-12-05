@@ -101,3 +101,19 @@ class Image(ImageBase):
 
     class Config:
         from_attributes = True
+
+# Chat Schemas
+class ChatRequest(BaseModel):
+    """Schema for user chat query."""
+    query: str
+
+class SearchResult(BaseModel):
+    """Schema for individual image result in chat."""
+    image_id: int
+    thumbnail_url: str
+    score: float | None = None
+
+class ChatResponse(BaseModel):
+    """Schema for chat response."""
+    answer: str
+    results: list[SearchResult]
