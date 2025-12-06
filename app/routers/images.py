@@ -122,13 +122,20 @@ async def get_image_file(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     
+    if image.status in ["active_deleted", "archived_deleted"]:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
     if image.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this image")
 
     if not os.path.exists(image.storage_path):
         raise HTTPException(status_code=404, detail="File not found on server")
 
-    return FileResponse(image.storage_path, media_type=image.mime_type)
+    return FileResponse(
+        image.storage_path, 
+        media_type=image.mime_type,
+        headers={"Cache-Control": "no-cache"}
+    )
 
 @router.get("/{image_id}/thumbnail")
 async def get_image_thumbnail(
@@ -143,6 +150,9 @@ async def get_image_thumbnail(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     
+    if image.status in ["active_deleted", "archived_deleted"]:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
     if image.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this image")
 
@@ -150,7 +160,11 @@ async def get_image_thumbnail(
         # Thumbnail is processing, or fails
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
-    return FileResponse(image.thumbnail_path, media_type="image/jpeg")
+    return FileResponse(
+        image.thumbnail_path, 
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache"}
+    )
 
 @router.get("", response_model=List[schemas.Image])
 async def read_images(
