@@ -11,7 +11,6 @@ from typing import Annotated, List, Optional
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Response
-from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from PIL import Image as PILImage, ImageOps
 
@@ -117,6 +116,7 @@ async def get_image_file(
 ):
     """
     Get the original image file.
+    Uses Nginx X-Accel-Redirect.
     """
     image = crud.get_image(db, image_id=image_id)
     if not image:
@@ -128,13 +128,17 @@ async def get_image_file(
     if image.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this image")
 
-    if not os.path.exists(image.storage_path):
-        raise HTTPException(status_code=404, detail="File not found on server")
+    relative_path = os.path.relpath(image.storage_path, "/app/uploads")
+    nginx_redirect_path = f"/protected_uploads/{relative_path}"
 
-    return FileResponse(
-        image.storage_path, 
-        media_type=image.mime_type,
-        headers={"Cache-Control": "no-cache"}
+    return Response(
+        content=None,
+        status_code=200,
+        headers={
+            "X-Accel-Redirect": nginx_redirect_path,
+            "Content-Type": image.mime_type,
+            "Cache-Control": "no-cache"
+        }
     )
 
 @router.get("/{image_id}/thumbnail")
@@ -145,6 +149,7 @@ async def get_image_thumbnail(
 ):
     """
     Get the thumbnail file.
+    Uses Nginx X-Accel-Redirect.
     """
     image = crud.get_image(db, image_id=image_id)
     if not image:
@@ -156,14 +161,21 @@ async def get_image_thumbnail(
     if image.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this image")
 
-    if not image.thumbnail_path or not os.path.exists(image.thumbnail_path):
+    if not image.thumbnail_path:
         # Thumbnail is processing, or fails
         raise HTTPException(status_code=404, detail="Thumbnail not available")
 
-    return FileResponse(
-        image.thumbnail_path, 
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-cache"}
+    relative_path = os.path.relpath(image.thumbnail_path, "/app/uploads")
+    nginx_redirect_path = f"/protected_uploads/{relative_path}"
+
+    return Response(
+        content=None,
+        status_code=200,
+        headers={
+            "X-Accel-Redirect": nginx_redirect_path,
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "no-cache"
+        }
     )
 
 @router.get("", response_model=List[schemas.Image])
