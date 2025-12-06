@@ -8,7 +8,7 @@ perform operations on the models.
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
-from . import models, auth
+from . import models
 
 # User CRUD Operations
 def get_user_by_username(db: Session, username: str):
