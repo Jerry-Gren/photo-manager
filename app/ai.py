@@ -21,7 +21,7 @@ COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "image_gallery")
 LLM_API_KEY = os.getenv("LLM_API_KEY")
 LLM_API_BASE = os.getenv("LLM_API_BASE")
 # Chat Model
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-pro")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")
 # Embedding Model
 EMBEDDING_MODEL = "text-embedding-3-small"
 
