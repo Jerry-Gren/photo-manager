@@ -91,7 +91,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 credentials_exception_cookie = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
-    detail="Could not validate refresh token",
+    detail="无法验证凭证或登录已过期",
 )
 
 def get_current_user_from_refresh_token(
@@ -177,7 +177,7 @@ async def get_current_user(
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="登录凭证无效或已过期",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:

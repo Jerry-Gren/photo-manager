@@ -62,7 +62,7 @@ async def upload_image(
     """
     # 1. Basic validation
     if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
+        raise HTTPException(status_code=400, detail="只能上传图片格式的文件")
 
     # 2. Generate secure filename
     file_ext = os.path.splitext(file.filename)[1]
@@ -77,7 +77,7 @@ async def upload_image(
         with open(storage_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+        raise HTTPException(status_code=500, detail=f"文件保存失败: {e}")
     
     # Calculate file size
     file_size = os.path.getsize(storage_path)
@@ -120,13 +120,13 @@ async def get_image_file(
     """
     image = crud.get_image(db, image_id=image_id)
     if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片不存在")
     
     if image.status in ["active_deleted", "archived_deleted"]:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片已被删除")
     
     if image.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this image")
+        raise HTTPException(status_code=403, detail="您无权访问该图片")
 
     relative_path = os.path.relpath(image.storage_path, "/app/uploads")
     nginx_redirect_path = f"/protected_uploads/{relative_path}"
@@ -153,17 +153,17 @@ async def get_image_thumbnail(
     """
     image = crud.get_image(db, image_id=image_id)
     if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片不存在")
     
     if image.status in ["active_deleted", "archived_deleted"]:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片已被删除")
     
     if image.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to access this image")
+        raise HTTPException(status_code=403, detail="您无权访问该图片")
 
     if not image.thumbnail_path:
         # Thumbnail is processing, or fails
-        raise HTTPException(status_code=404, detail="Thumbnail not available")
+        raise HTTPException(status_code=404, detail="缩略图尚未生成或生成失败")
 
     relative_path = os.path.relpath(image.thumbnail_path, "/app/uploads")
     nginx_redirect_path = f"/protected_uploads/{relative_path}"
@@ -227,10 +227,10 @@ async def add_tag_to_image(
     # 1. Check ownership
     image = crud.get_image(db, image_id)
     if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片不存在")
     
     if image.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to modify this image")
+        raise HTTPException(status_code=403, detail="您无权编辑该图片")
         
     # 2. Add tag
     crud.add_tag_to_image(db, image_id, tag.name, tag_type="user")
@@ -250,10 +250,10 @@ async def remove_tag_from_image(
     # 1. Check ownership
     image = crud.get_image(db, image_id)
     if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片不存在")
         
     if image.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to modify this image")
+        raise HTTPException(status_code=403, detail="您无权编辑该图片")
 
     # 2. Remove tag
     crud.remove_tag_from_image(db, image_id, tag_id)
@@ -283,12 +283,12 @@ async def edit_image(
     # 1. Validation
     original_db_image = crud.get_image(db, image_id)
     if not original_db_image:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片不存在")
     if original_db_image.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to modify this image")
+        raise HTTPException(status_code=403, detail="您无权编辑该图片")
     
     if not os.path.exists(original_db_image.storage_path):
-        raise HTTPException(status_code=404, detail="Original file missing")
+        raise HTTPException(status_code=404, detail="原始图片文件丢失")
 
     # 2. Process Image
     try:
@@ -329,7 +329,7 @@ async def edit_image(
             new_file_size = os.path.getsize(new_storage_path)
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Image processing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"图片处理失败: {e}")
 
     # 4. Database Transaction
     try:
@@ -377,7 +377,7 @@ async def edit_image(
         # Clean up the new file if DB failed
         if os.path.exists(new_storage_path):
             os.remove(new_storage_path)
-        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+        raise HTTPException(status_code=500, detail=f"数据库错误: {e}")
 
 @router.delete("/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_image(
@@ -394,10 +394,10 @@ async def delete_image(
     """
     image = crud.get_image(db, image_id)
     if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
+        raise HTTPException(status_code=404, detail="图片不存在")
         
     if image.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to delete this image")
+        raise HTTPException(status_code=403, detail="您无权删除该图片")
 
     # 1. Update Status
     previous_status = image.status

@@ -38,11 +38,11 @@ async def register_user(user: schemas.UserCreate, db: Session = Depends(get_db))
     """
     db_user = crud.get_user_by_username(db, username=user.username)
     if db_user:
-        raise HTTPException(status_code=400, detail="Username already registered")
+        raise HTTPException(status_code=400, detail="该用户名已被注册")
     
     db_email = crud.get_user_by_email(db, email=user.email)
     if db_email:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        raise HTTPException(status_code=400, detail="该邮箱已被注册")
 
     hashed_password = auth.get_password_hash(user.password)
     
@@ -81,7 +81,7 @@ async def login_for_access_token(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="用户名或密码错误",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
