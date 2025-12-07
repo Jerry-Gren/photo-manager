@@ -17,6 +17,9 @@ pydantic[email] # For email validation
 
 # Image Processing
 Pillow
+pillow-heif
+pillow-jxl-plugin
+rawpy
 
 # Async Task Queue
 celery

@@ -5,7 +5,7 @@ These functions interact directly with the database session to
 perform operations on the models.
 """
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 from sqlalchemy import func
 from datetime import datetime
 from . import models
@@ -181,7 +181,11 @@ def get_images(
     5. Apply Pagination.
     """
     # Base query
-    query = db.query(models.Image).filter(models.Image.user_id == user_id)
+    query = db.query(models.Image).options(
+        defer(models.Image.exif_data),
+        defer(models.Image.ai_analysis),
+        defer(models.Image.edit_history)
+    ).filter(models.Image.user_id == user_id)
     if status:
         query = query.filter(models.Image.status == status)
 

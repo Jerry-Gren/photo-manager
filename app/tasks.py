@@ -7,13 +7,20 @@ Architecture: Core -> Fan-out (AI only) -> Periodic Indexing. "enrich_gps" is me
 """
 
 import os
+import io
 import logging
 import json
 import base64
 from datetime import datetime
 import httpx
+import rawpy
 from PIL import Image, ExifTags, ImageOps
 import reverse_geocoder as rg
+
+import pillow_heif
+pillow_heif.register_heif_opener()
+
+import pillow_jxl
 
 from .worker import celery_app
 from .database import SessionLocal
@@ -28,6 +35,58 @@ THUMBNAILS_DIR = os.path.join(UPLOAD_DIR, "thumbnails")
 
 # Ensure thumbnails directory exists
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+
+# Priority list for determining 'taken_at'
+DATE_TAGS_PRIORITY = ["DateTimeOriginal", "DateTimeDigitized", "DateTime"]
+
+# Tags to explicitly exclude from DB storage (Binary data, offsets, legacy junk)
+EXIF_BLOCKLIST = {
+    "MakerNote", "UserComment",
+    "PrintImageMatching",
+    "XPTitle", "XPComment", "XPAuthor", "XPKeywords", "XPSubject",
+    "TIFF/EPStandardID",
+    
+    "ExifOffset", "ExifIFDPointer", "GPSInfoIFDPointer", "InteroperabilityIFDPointer",
+    "JPEGInterchangeFormat", "JPEGInterchangeFormatLength",
+    "StripOffsets", "StripByteCounts", "RowsPerStrip",
+    "TileWidth", "TileLength", "TileOffsets", "TileByteCounts",
+    "ThumbnailOffset", "ThumbnailLength", "ExifInteroperabilityOffset",
+    "ImageUniqueID", "BodySerialNumber",
+    "NewSubfileType",
+    
+    "Orientation",
+    "ExifImageWidth", "ExifImageHeight",
+    "ImageWidth", "ImageLength",
+    "ShutterSpeedValue", "ApertureValue", "MaxApertureValue",
+    "DateTime", "DateTimeDigitized",
+    "OffsetTime", "OffsetTimeOriginal", "OffsetTimeDigitized",
+    "LensSpecification",
+    
+    "MeteringMode", "ExposureProgram", "LightSource", "SensingMethod",
+    "SceneCaptureType", "FileSource", "SceneType", "CustomRendered",
+    "GainControl", "Contrast", "Saturation", "Sharpness",
+    "SubjectDistance", "SubjectDistanceRange",
+    "ExposureMode", "WhiteBalance", "DigitalZoomRatio",
+    "BrightnessValue", "Software", "ProcessingSoftware",
+    "SubsecTime", "SubsecTimeOriginal", "SubsecTimeDigitized",
+    "SensitivityType", "ExposureIndex", "RecommendedExposureIndex",
+
+    "CFAPattern", "CFARepeatPatternDim",
+    "SpectralSensitivity", "OECF", "SpatialFrequencyResponse",
+    "DeviceSettingDescription", "SubjectArea", "SubjectLocation",
+    "CompressedBitsPerPixel", "ComponentsConfiguration",
+    "FlashPixVersion", "ExifVersion",
+    "InteroperabilityIndex", "InteroperabilityVersion",
+    "RelatedSoundFile", "ImageDepth",
+    "ResolutionUnit", "XResolution", "YResolution",
+    "FocalPlaneXResolution", "FocalPlaneYResolution", "FocalPlaneResolutionUnit",
+    "WhitePoint", "PrimaryChromaticities", "YCbCrCoefficients",
+    "YCbCrSubSampling", "YCbCrPositioning", "ReferenceBlackWhite",
+    "TransferFunction", "ColorSpace", "PlanarConfiguration",
+    "SampleFormat", "TransferRange",
+    "GPSVersionID", "GPSInfo",
+    "BitsPerSample", "Compression", "PhotometricInterpretation", "SamplesPerPixel"
+}
 
 def get_db_session():
     """Helper to get a new database session for the task."""
@@ -53,6 +112,32 @@ def _format_rational(value, digits=2):
         return float(value)
     except (ValueError, TypeError):
         return 0.0
+
+def _clean_for_json(value):
+    """
+    Recursively sanitizes values to ensure JSON serializability.
+    Converts IFDRational, bytes, and complex tuples to simple types.
+    """
+    # 1. Handle Pillow IFDRational
+    if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
+        return float(value.numerator) / float(value.denominator) if value.denominator != 0 else 0.0
+    # 2. Handle Bytes (decode or placeholder)
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return value.decode('utf-8').strip('\x00')
+        except UnicodeDecodeError:
+            return "<binary>"
+    # 3. Handle Tuples/Lists (Recursion)
+    if isinstance(value, (tuple, list)):
+        return [_clean_for_json(item) for item in value]
+    # 4. Handle Dictionaries (Recursion)
+    if isinstance(value, dict):
+        return {str(k): _clean_for_json(v) for k, v in value.items()}
+    # 5. Passthrough for simple types
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    # 6. Fallback
+    return str(value)
 
 def _format_shutter_speed(value):
     """Format exposure time (e.g., 0.0166 -> '1/60')."""
@@ -94,42 +179,43 @@ def _format_flash(value):
 def _convert_to_degrees(value):
     """Helper to convert EXIF GPS (DMS) to decimal degrees."""
     try:
-        d = float(value[0])
-        m = float(value[1])
-        s = float(value[2])
-        return d + (m / 60.0) + (s / 3600.0)
+        # After _clean_for_json, value is likely a list of floats: [deg, min, sec]
+        if isinstance(value, (list, tuple)) and len(value) >= 3:
+            d = float(value[0])
+            m = float(value[1])
+            s = float(value[2])
+            return d + (m / 60.0) + (s / 3600.0)
+        # Fallback for single values (though rare for standard DMS)
+        return float(value)
     except Exception:
         return 0.0
 
 def get_lat_lon(exif_data):
     """Returns (lat, lon) from raw EXIF data if available."""
-    lat = None
-    lon = None
-    # 34853 is the Tag ID for GPSInfo
-    gps_info = exif_data.get(34853) or exif_data.get("GPSInfo")
-    if not gps_info:
+    gps_info = exif_data.get("GPSInfo")
+    if not gps_info or not isinstance(gps_info, dict):
         return None, None
+
     # GPS Tag IDs:
-    # 1: GPSLatitudeRef ('N' or 'S')
-    # 2: GPSLatitude ((d, m, s))
-    # 3: GPSLongitudeRef ('E' or 'W')
-    # 4: GPSLongitude ((d, m, s))
-    gps_latitude = gps_info.get(2)
-    gps_latitude_ref = gps_info.get(1)
-    gps_longitude = gps_info.get(4)
-    gps_longitude_ref = gps_info.get(3)
-    if gps_latitude and gps_latitude_ref and gps_longitude and gps_longitude_ref:
-        lat = _convert_to_degrees(gps_latitude)
-        if gps_latitude_ref != "N":
-            lat = 0 - lat
-        lon = _convert_to_degrees(gps_longitude)
-        if gps_longitude_ref != "E":
-            lon = 0 - lon
-    return lat, lon
+    # 1: LatitudeRef, 2: Latitude, 3: LongitudeRef, 4: Longitude
+    # Note: Keys are strings because _clean_for_json converted them.
+    lat_ref = gps_info.get("1") or gps_info.get(1)
+    lat_val = gps_info.get("2") or gps_info.get(2)
+    lon_ref = gps_info.get("3") or gps_info.get(3)
+    lon_val = gps_info.get("4") or gps_info.get(4)
+
+    if lat_val and lat_ref and lon_val and lon_ref:
+        lat = _convert_to_degrees(lat_val)
+        if lat_ref != "N": lat = -lat
+        lon = _convert_to_degrees(lon_val)
+        if lon_ref != "E": lon = -lon
+        return lat, lon
+    return None, None
 
 def parse_exif_data(pil_image):
     """
-    Extracts and sanitizes EXIF data from a PIL image.
+    Extracts and sanitizes EXIF data using modern Pillow APIs.
+    Supports JPG, PNG, WebP etc.
     
     Returns:
         A tuple containing:
@@ -139,66 +225,10 @@ def parse_exif_data(pil_image):
     """
     exif_data = {}
     taken_at = None
-    raw_exif = None
 
-    # Check for _getexif method (JPEG only)
-    if hasattr(pil_image, "_getexif"):
-        try:
-            raw_exif = pil_image._getexif()
-        except Exception:
-            pass
-
-    # All types of date tags that we cares about
-    date_tags = ["DateTimeOriginal", "DateTimeDigitized", "DateTime"]
-
-    # Tags we don't want to store
-    blocklist = {
-        "MakerNote", "UserComment",
-        "PrintImageMatching",
-        "XPTitle", "XPComment", "XPAuthor", "XPKeywords", "XPSubject",
-        "TIFF/EPStandardID",
-        
-        "ExifOffset", "ExifIFDPointer", "GPSInfoIFDPointer", "InteroperabilityIFDPointer",
-        "JPEGInterchangeFormat", "JPEGInterchangeFormatLength",
-        "StripOffsets", "StripByteCounts", "RowsPerStrip",
-        "TileWidth", "TileLength", "TileOffsets", "TileByteCounts",
-        "ThumbnailOffset", "ThumbnailLength", "ExifInteroperabilityOffset",
-        "ImageUniqueID", "BodySerialNumber",
-        "NewSubfileType",
-        
-        "Orientation",
-        "ExifImageWidth", "ExifImageHeight",
-        "ImageWidth", "ImageLength",
-        "ShutterSpeedValue", "ApertureValue", "MaxApertureValue",
-        "DateTime", "DateTimeDigitized",
-        "OffsetTime", "OffsetTimeOriginal", "OffsetTimeDigitized",
-        "LensSpecification",
-        
-        "MeteringMode", "ExposureProgram", "LightSource", "SensingMethod",
-        "SceneCaptureType", "FileSource", "SceneType", "CustomRendered",
-        "GainControl", "Contrast", "Saturation", "Sharpness",
-        "SubjectDistance", "SubjectDistanceRange",
-        "ExposureMode", "WhiteBalance", "DigitalZoomRatio",
-        "BrightnessValue", "Software", "ProcessingSoftware",
-        "SubsecTime", "SubsecTimeOriginal", "SubsecTimeDigitized",
-        "SensitivityType", "ExposureIndex", "RecommendedExposureIndex",
-
-        "CFAPattern", "CFARepeatPatternDim",
-        "SpectralSensitivity", "OECF", "SpatialFrequencyResponse",
-        "DeviceSettingDescription", "SubjectArea", "SubjectLocation",
-        "CompressedBitsPerPixel", "ComponentsConfiguration",
-        "FlashPixVersion", "ExifVersion",
-        "InteroperabilityIndex", "InteroperabilityVersion",
-        "RelatedSoundFile", "ImageDepth",
-        "ResolutionUnit", "XResolution", "YResolution",
-        "FocalPlaneXResolution", "FocalPlaneYResolution", "FocalPlaneResolutionUnit",
-        "WhitePoint", "PrimaryChromaticities", "YCbCrCoefficients",
-        "YCbCrSubSampling", "YCbCrPositioning", "ReferenceBlackWhite",
-        "TransferFunction", "ColorSpace", "PlanarConfiguration",
-        "SampleFormat", "TransferRange",
-        "GPSVersionID", "GPSInfo",
-        "BitsPerSample", "Compression", "PhotometricInterpretation", "SamplesPerPixel"
-    }
+    # Get raw EXIF object
+    # getexif() works for JPG, PNG, WebP in newer Pillow versions
+    raw_exif = pil_image.getexif()
     
     if raw_exif:
         for tag_id, value in raw_exif.items():
@@ -206,63 +236,58 @@ def parse_exif_data(pil_image):
             tag_name = ExifTags.TAGS.get(tag_id, tag_id)
             tag_str = str(tag_name)
             
-            # Skip unknown tags or blocklisted tags
-            if isinstance(tag_id, int) and tag_name == tag_id:
-                continue # Skip numeric-only keys if we can't resolve name
-            if tag_str in blocklist:
-                continue
-
-            # 1. Parse date_tags
-            if tag_name in date_tags and not taken_at:
+            # 1. Handle GPSInfo separately
+            if tag_str == "GPSInfo":
                 try:
-                    # Replace null bytes or odd chars if present
-                    clean_val = str(value).replace('\x00', '').strip()
-                    taken_at = datetime.strptime(clean_val, "%Y:%m:%d %H:%M:%S")
-                except ValueError:
+                    gps_ifd = raw_exif.get_ifd(tag_id)
+                    exif_data["GPSInfo"] = _clean_for_json({k: v for k, v in gps_ifd.items()})
+                except Exception:
                     pass
+                continue
             
-            # 2. Format Specific High-Value Tags
-            formatted_value = value
-            if tag_str == "FNumber" or tag_str == "ApertureValue":
-                formatted_value = _format_aperture(value)
+            # 2. Skip unknown or blocklisted tags
+            if isinstance(tag_name, int) or tag_str in EXIF_BLOCKLIST:
+                continue
+            
+            # 3. Format specific values
+            fmt_val = value
+            if tag_str in ["FNumber", "ApertureValue"]:
+                fmt_val = _format_aperture(value)
             elif tag_str == "ExposureTime":
-                formatted_value = _format_shutter_speed(value)
-            elif tag_str == "FocalLength" or tag_str == "FocalLengthIn35mmFilm":
-                formatted_value = _format_focal_length(value)
-            elif tag_str == "ISOSpeedRatings":
-                # ISO sometimes comes as a tuple/list, take the first one
-                if isinstance(value, (tuple, list)):
-                    formatted_value = str(value[0])
-                else:
-                    formatted_value = str(value)
+                fmt_val = _format_shutter_speed(value)
+            elif tag_str in ["FocalLength", "FocalLengthIn35mmFilm"]:
+                fmt_val = _format_focal_length(value)
             elif tag_str == "Flash":
-                formatted_value = _format_flash(value)
-            elif tag_str == "UserComment":
-                if isinstance(value, bytes):
-                    if value.startswith(b'ASCII\x00\x00\x00'):
-                        formatted_value = value[8:].decode('utf-8', errors='ignore')
-                    else:
-                        formatted_value = value.decode('utf-8', errors='ignore')
-
-            # 2. Sanitize value for JSON storage
-            # EXIF values can be bytes or complex objects; convert to string if needed
-            if isinstance(value, (bytes, bytearray)):
+                fmt_val = _format_flash(value)
+            
+            # 4. Sanitize encoding (Binary -> String placeholder)
+            if isinstance(fmt_val, (bytes, bytearray)):
                 try:
-                    value = value.decode()
+                    # Try simple decode
+                    if fmt_val.startswith(b'ASCII\x00\x00\x00'):
+                        fmt_val = fmt_val[8:].decode('utf-8').strip('\x00')
+                    else:
+                        fmt_val = fmt_val.decode('utf-8').strip('\x00')
                 except UnicodeDecodeError:
-                    value = "<binary data>"
+                    fmt_val = "<binary>"
             
-            # Convert tuples/rationals that weren't caught above to string
-            # to ensure JSON serialization doesn't fail
-            if not isinstance(formatted_value, (str, int, float, bool, type(None))):
-                formatted_value = str(formatted_value)
-            
-            if isinstance(formatted_value, str):
-                formatted_value = formatted_value.strip()
-                if not formatted_value:
-                    continue
+            if not isinstance(fmt_val, (str, int, float, bool, type(None))):
+                fmt_val = str(fmt_val)
 
-            exif_data[tag_str] = formatted_value
+            exif_data[tag_str] = fmt_val
+
+        # 5. Parse Date (Priority Logic)
+        for date_tag in DATE_TAGS_PRIORITY:
+            if date_tag in exif_data:
+                date_str = exif_data[date_tag]
+                try:
+                    # Clean up common garbage chars
+                    clean_str = str(date_str).replace('\x00', '').strip()
+                    # Standard EXIF: "YYYY:MM:DD HH:MM:SS"
+                    taken_at = datetime.strptime(clean_str, "%Y:%m:%d %H:%M:%S")
+                    break # Stop once we find the highest priority valid date
+                except ValueError:
+                    continue
 
     return exif_data, taken_at, raw_exif
 
@@ -291,6 +316,33 @@ def generate_time_tags(dt: datetime) -> list[str]:
         
     return tags
 
+def load_visual_image(path):
+    """
+    Load image for visual tasks (Thumbnails, AI).
+    Handles RAW (NEF, ARW, DNG) via rawpy, others via Pillow.
+    Returns: Pillow Image Object (RGB)
+    """
+    ext = os.path.splitext(path)[1].lower()
+    
+    # List of RAW formats to process with rawpy
+    raw_exts = {'.nef', '.arw', '.dng', '.cr2', '.cr3', '.raf', '.orf', '.rw2'}
+    
+    if ext in raw_exts:
+        try:
+            logger.info(f"Developing RAW image: {path}")
+            with rawpy.imread(path) as raw:
+                # Postprocess: Demosaic, White Balance, Color Space conversion -> Numpy Array
+                # use_camera_wb=True uses the WB shot by camera
+                rgb_array = raw.postprocess(use_camera_wb=True, no_auto_bright=False, bright=1.0)
+                return Image.fromarray(rgb_array)
+        except Exception as e:
+            logger.error(f"Rawpy failed for {path}, falling back to Pillow: {e}")
+            # Fallback to Pillow (might look dark or be a low-res preview)
+            return Image.open(path)
+    else:
+        # JPG, PNG, HEIC, JXL, etc.
+        return Image.open(path)
+
 @celery_app.task(bind=True, max_retries=3)
 def process_image_core(self, image_id: int):
     """
@@ -317,34 +369,43 @@ def process_image_core(self, image_id: int):
 
         logger.info(f"[Core] Processing Image {image_id}...")
 
-        # Prepare to capture lat/lon for AI
-        lat, lon = None, None
-
-        # 2. Open file with Pillow
-        with Image.open(db_image.storage_path) as raw_img:
-            # 3. Extract EXIF & Generate Thumbnail
-            exif_dict, taken_at, raw_exif_obj = parse_exif_data(raw_img)
-
-            if raw_exif_obj:
-                lat, lon = get_lat_lon(raw_exif_obj)
-
-            # Fix orientation
-            img = ImageOps.exif_transpose(raw_img)
+        # 1. Parse EXIF
+        # Note: Pillow can read metadata from RAW files even if visual is bad
+        try:
+            with Image.open(db_image.storage_path) as meta_img:
+                exif_dict, taken_at, _ = parse_exif_data(meta_img)
+                lat, lon = get_lat_lon(exif_dict)
+        except Exception as e:
+            logger.warning(f"Metadata extraction failed: {e}")
+            exif_dict, taken_at, lat, lon = {}, None, None, None
+        
+        # 2. Load Visual Image
+        with load_visual_image(db_image.storage_path) as img:
+            # Fix Orientation
+            if hasattr(img, 'getexif'): # Check if it's a standard Pillow image
+                img = ImageOps.exif_transpose(img)
             res_w, res_h = img.size
             
+            # Thumbnail
+            MAX_SIZE = (800, 800)
             thumb = img.copy()
-            thumb.thumbnail((400, 400))
+            thumb.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
             
-            # Construct thumbnail filename
+            # Handle Transparency
             base_name = os.path.basename(db_image.storage_path)
             name_part, _ = os.path.splitext(base_name)
-            thumb_filename = f"{name_part}_thumb.jpg"
-            thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
+
+            has_transparency = img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info)
             
-            # Save thumbnail (convert to RGB to handle PNGs with transparency)
-            if thumb.mode in ("RGBA", "P"):
-                thumb = thumb.convert("RGB")
-            thumb.save(thumb_path, "JPEG", quality=80)
+            if has_transparency:
+                thumb_filename = f"{name_part}_thumb.png"
+                thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
+                thumb.save(thumb_path, "PNG", optimize=True)
+            else:
+                if thumb.mode != 'RGB': thumb = thumb.convert('RGB')
+                thumb_filename = f"{name_part}_thumb.jpg"
+                thumb_path = os.path.join(THUMBNAILS_DIR, thumb_filename)
+                thumb.save(thumb_path, "JPEG", quality=85, optimize=True)
 
             # 4. Update DB Record
             db_image.thumbnail_path = thumb_path
@@ -443,8 +504,14 @@ def enrich_ai_models(self, image_id: int, lat: float = None, lon: float = None):
 
         # 2. AI Vision Analysis
         # 2.1. Encode image to base64
-        with open(image.storage_path, "rb") as image_file:
-            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+        with load_visual_image(image.storage_path) as image_file:
+            if image_file.mode != 'RGB':
+                image_file = image_file.convert('RGB')
+            if max(image_file.size) > 2048:
+                image_file.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            buffer = io.BytesIO()
+            image_file.save(buffer, format="JPEG", quality=85)
+            base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
         
         # 2.2. generate rough location constraint
         location_context = "Empty."
