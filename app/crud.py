@@ -7,6 +7,7 @@ perform operations on the models.
 
 from sqlalchemy.orm import Session, defer
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from . import models
 
@@ -103,12 +104,18 @@ def get_tag_by_name(db: Session, name: str):
 def get_or_create_tag(db: Session, name: str, tag_type: str = "user"):
     """Implements 'Get or Create' logic for tags."""
     tag = get_tag_by_name(db, name)
-    if not tag:
+    if tag:
+        return tag
+    try:
         tag = models.Tag(name=name, tag_type=tag_type)
         db.add(tag)
         db.commit()
         db.refresh(tag)
-    return tag
+        return tag
+    except IntegrityError:
+        db.rollback()
+        tag = get_tag_by_name(db, name)
+        return tag
 
 def add_tag_to_image(db: Session, image_id: int, tag_name: str, tag_type: str = "user"):
     """Links a tag to an image. Creates the tag if it doesn't exist."""
