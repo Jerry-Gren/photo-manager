@@ -58,7 +58,7 @@ async def chat_with_gallery(
     try:
         results = collection.query(
             query_embeddings=[query_vector],
-            n_results=5,
+            n_results=30,
             where={"user_id": current_user.id}, # User can only access his own images
             include=["metadatas", "distances"]
         )
@@ -66,7 +66,7 @@ async def chat_with_gallery(
         # If collection is empty or other DB error
         print(f"ChromaDB Query Error: {e}")
         def error_generator():
-            yield "抱歉，搜索服务暂时不可用，或者您的相册中还没有已索引的图片。"
+            yield "抱歉，搜索服务暂时不可用。"
         return StreamingResponse(error_generator(), media_type="text/plain")
 
     # Parse results
@@ -95,7 +95,12 @@ async def chat_with_gallery(
                 f"  Markdown引用代码: ![{image_id}]({thumbnail_url})\n"
             )
 
-    context_str = "\n".join(context_parts)
+    if context_parts == []:
+        context_str = "用户相册暂无图片，或RAG索引尚未完成"
+    else:
+        context_str = "\n".join(context_parts)
+
+    print(context_str)
 
     now = datetime.now()
     weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
@@ -110,18 +115,21 @@ async def chat_with_gallery(
 
     用户正在寻找："{request.query}"
 
-    以下是我在用户相册中为您检索到的几张最相关的图片信息（按相关性排序）：
+    以下是用户相册中的几张最相关的图片信息（按相关性排序）：
     {context_str}
 
     请遵循以下规则回答：
-    0. 避免使用“用户”来称呼用户，而应改用[当前用户]的名称。
+    0. 避免使用“用户”来称呼用户，而应改用当前用户的名称。
     1. 用自然流畅的简体中文回答用户，语言风格轻松，多用生活惯用语。
-    2. 告诉用户你找到了什么。
-    3. 如果你提到的图片在上述列表中，请务必直接使用提供的 [Markdown引用代码] 将图片展示出来。
-       例如： "我找到了一张照片：![99](/api/v1/images/99/thumbnail)"。
+    2. 告诉用户你找到了什么，而不是上述列表。
+    3. 如果你提到的图片在上述列表中，请务必直接使用提供的Markdown引用代码将图片展示出来。
+       例如： "![99](/api/v1/images/99/thumbnail)"。
     4. 不要只列出ID，要让回复看起来图文并茂。
-    5. 请参考每张图片的[匹配度参考]，注意这个信息不应告知用户。如果所有图片的距离都比较大（例如大于 1.0），这说明数据库中可能没有真正相关的图片。在这种情况下，请礼貌地告知用户可能没有找到完全匹配的结果。你不需要将这张看似不相关的图片提供给用户，只需要简要告知用户这张不相关的图片的关键词，并建议用户尝试用这个关键词来搜索。
-    6. 当请求中包含时间时，你需要参考[当前时间]，并给出计算依据。对于非图片检索的用户要求，请礼貌拒绝用户，告知用户自己无法完成这个请求。除此之外，请不要回复更多内容，包括提供图片信息。
+    5. 回复中必须给出**所有**满足用户寻找内容的图片，仅必要时在回复的最后包含1-2条不完全相关的结果。
+    6. 请参考每张图片的[匹配度参考]，注意这个信息不应告知用户，并且只能作为回答的最次要依据。如果所有图片的距离都比较大（例如大于 1.45），这说明数据库中可能没有真正相关的图片。在这种情况下，请礼貌地告知用户可能没有找到完全匹配的结果。你不需要将这张看似不相关的图片提供给用户，只需要简要告知用户这张不相关的图片的关键词，并建议用户尝试用这个关键词来搜索。
+    7. 当请求中包含时间时，你需要参考[当前时间]，并给出计算依据。
+    8. 当用户询问你是谁时，请礼貌介绍自己。除此之外，请不要回复更多内容，包括提供图片信息。
+    9. 对于非图片检索的用户要求，例如计算、联网查询、编写代码等等，请礼貌拒绝用户，告知用户自己无法完成这个请求。除此之外，请不要回复更多内容，包括提供图片信息。
     """
 
     # 4. Stream the Response

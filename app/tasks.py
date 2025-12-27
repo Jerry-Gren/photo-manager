@@ -58,7 +58,7 @@ EXIF_BLOCKLIST = {
     "ExifImageWidth", "ExifImageHeight",
     "ImageWidth", "ImageLength",
     "ShutterSpeedValue", "ApertureValue", "MaxApertureValue",
-    "DateTime", "DateTimeDigitized",
+    "DateTimeDigitized",
     "OffsetTime", "OffsetTimeOriginal", "OffsetTimeDigitized",
     "LensSpecification",
     
@@ -85,7 +85,24 @@ EXIF_BLOCKLIST = {
     "TransferFunction", "ColorSpace", "PlanarConfiguration",
     "SampleFormat", "TransferRange",
     "GPSVersionID", "GPSInfo",
-    "BitsPerSample", "Compression", "PhotometricInterpretation", "SamplesPerPixel"
+    "BitsPerSample", "Compression", "PhotometricInterpretation", "SamplesPerPixel",
+
+    "SubIFDs", "XMLPacket", "DNGVersion", "DNGBackwardVersion", "DNGPrivateData",
+    "UniqueCameraModel", "RawDataUniqueID", "OriginalRawFileName", "ImageNumber",
+
+    "ColorMatrix1", "ColorMatrix2", "ForwardMatrix1", "ForwardMatrix2",
+    "CameraCalibration1", "CameraCalibration2", "CameraCalibrationSignature",
+    "CalibrationIlluminant1", "CalibrationIlluminant2",
+    "AnalogBalance", "AsShotNeutral", "BaselineExposure", "BaselineNoise", "BaselineSharpness",
+    "LinearResponseLimit", "ShadowScale", "NoiseProfile", "CameraSerialNumber"
+
+    "ProfileName", "ProfileCopyright", "ProfileEmbedPolicy",
+    "ProfileHueSatMapDims", "ProfileHueSatMapData1", "ProfileHueSatMapData2",
+    "ProfileLookTableData", "ProfileLookTableDims",
+    "ProfileCalibrationSignature",
+    
+    "PreviewDateTime", "PreviewColorSpace", "PreviewSettingsDigest",
+    "PreviewApplicationName", "PreviewApplicationVersion"
 }
 
 def get_db_session():
@@ -212,6 +229,49 @@ def get_lat_lon(exif_data):
         return lat, lon
     return None, None
 
+def _get_season_description(dt: datetime) -> str:
+    """Return season based on month，only for Northern Hemisphere"""
+    m = dt.month
+    if 3 <= m <= 5: return "春季"
+    if 6 <= m <= 8: return "夏季"
+    if 9 <= m <= 11: return "秋季"
+    return "冬季"
+
+def _get_time_description(dt: datetime) -> str:
+    """Return time description based on hour"""
+    h = dt.hour
+    if 5 <= h < 9: return "清晨"
+    if 9 <= h < 11: return "上午"
+    if 11 <= h < 13: return "中午"
+    if 13 <= h < 17: return "下午"
+    if 17 <= h < 19: return "傍晚"
+    if 19 <= h < 24: return "晚上"
+    return "深夜"
+
+def generate_time_tags(dt: datetime) -> list[str]:
+    """Helper to convert datetime into discrete tags."""
+    if not dt:
+        return []
+    
+    tags = []
+    # Year & Month
+    tags.append(f"{dt.year}年")
+    tags.append(f"{dt.month}月")
+    
+    # Season (only for Northern Hemisphere)
+    tags.append(_get_season_description(dt))
+        
+    # Time of day
+    time_desc = _get_time_description(dt)
+    if time_desc in ["清晨", "上午"]:
+        tags.append("上午")
+    elif time_desc in ["中午", "下午"]:
+        tags.append("下午")
+    else:
+        tags.append("晚上")
+        
+    return tags
+
 def parse_exif_data(pil_image):
     """
     Extracts and sanitizes EXIF data using modern Pillow APIs.
@@ -231,90 +291,78 @@ def parse_exif_data(pil_image):
     raw_exif = pil_image.getexif()
     
     if raw_exif:
-        for tag_id, value in raw_exif.items():
-            # Get the human-readable tag name
-            tag_name = ExifTags.TAGS.get(tag_id, tag_id)
-            tag_str = str(tag_name)
+        dicts_to_scan = [raw_exif]
+        try:
+            if 34665 in raw_exif:
+                sub_ifd = raw_exif.get_ifd(34665)
+                if sub_ifd:
+                    dicts_to_scan.append(sub_ifd)
+        except Exception as e:
+            logger.warning(f"Failed to read Exif SubIFD: {e}")
+        for tags_dict in dicts_to_scan:
+            for tag_id, value in tags_dict.items():
+                # Get the human-readable tag name
+                tag_name = ExifTags.TAGS.get(tag_id, tag_id)
+                tag_str = str(tag_name)
             
-            # 1. Handle GPSInfo separately
-            if tag_str == "GPSInfo":
-                try:
-                    gps_ifd = raw_exif.get_ifd(tag_id)
-                    exif_data["GPSInfo"] = _clean_for_json({k: v for k, v in gps_ifd.items()})
-                except Exception:
-                    pass
-                continue
-            
-            # 2. Skip unknown or blocklisted tags
-            if isinstance(tag_name, int) or tag_str in EXIF_BLOCKLIST:
-                continue
-            
-            # 3. Format specific values
-            fmt_val = value
-            if tag_str in ["FNumber", "ApertureValue"]:
-                fmt_val = _format_aperture(value)
-            elif tag_str == "ExposureTime":
-                fmt_val = _format_shutter_speed(value)
-            elif tag_str in ["FocalLength", "FocalLengthIn35mmFilm"]:
-                fmt_val = _format_focal_length(value)
-            elif tag_str == "Flash":
-                fmt_val = _format_flash(value)
-            
-            # 4. Sanitize encoding (Binary -> String placeholder)
-            if isinstance(fmt_val, (bytes, bytearray)):
-                try:
-                    # Try simple decode
-                    if fmt_val.startswith(b'ASCII\x00\x00\x00'):
-                        fmt_val = fmt_val[8:].decode('utf-8').strip('\x00')
-                    else:
-                        fmt_val = fmt_val.decode('utf-8').strip('\x00')
-                except UnicodeDecodeError:
-                    fmt_val = "<binary>"
-            
-            if not isinstance(fmt_val, (str, int, float, bool, type(None))):
-                fmt_val = str(fmt_val)
-
-            exif_data[tag_str] = fmt_val
-
-        # 5. Parse Date (Priority Logic)
-        for date_tag in DATE_TAGS_PRIORITY:
-            if date_tag in exif_data:
-                date_str = exif_data[date_tag]
-                try:
-                    # Clean up common garbage chars
-                    clean_str = str(date_str).replace('\x00', '').strip()
-                    # Standard EXIF: "YYYY:MM:DD HH:MM:SS"
-                    taken_at = datetime.strptime(clean_str, "%Y:%m:%d %H:%M:%S")
-                    break # Stop once we find the highest priority valid date
-                except ValueError:
+                # 1. Handle GPSInfo separately
+                if tag_str == "GPSInfo":
+                    try:
+                        if hasattr(raw_exif, 'get_ifd'):
+                            gps_ifd = raw_exif.get_ifd(tag_id)
+                            exif_data["GPSInfo"] = _clean_for_json({k: v for k, v in gps_ifd.items()})
+                    except Exception:
+                        pass
                     continue
+            
+                # 2. Skip unknown or blocklisted tags
+                if isinstance(tag_name, int) or tag_str in EXIF_BLOCKLIST:
+                    continue
+            
+                # 3. Format specific values
+                fmt_val = value
+                if tag_str in ["FNumber", "ApertureValue"]:
+                    fmt_val = _format_aperture(value)
+                elif tag_str == "ExposureTime":
+                    fmt_val = _format_shutter_speed(value)
+                elif tag_str in ["FocalLength", "FocalLengthIn35mmFilm"]:
+                    fmt_val = _format_focal_length(value)
+                elif tag_str in ["ISOSpeedRatings", "PhotographicSensitivity"]:
+                    if isinstance(value, (list, tuple)):
+                        fmt_val = value[0]
+                elif tag_str == "Flash":
+                    fmt_val = _format_flash(value)
+            
+                # 4. Sanitize encoding (Binary -> String placeholder)
+                if isinstance(fmt_val, (bytes, bytearray)):
+                    try:
+                        # Try simple decode
+                        if fmt_val.startswith(b'ASCII\x00\x00\x00'):
+                            fmt_val = fmt_val[8:].decode('utf-8').strip('\x00')
+                        else:
+                            fmt_val = fmt_val.decode('utf-8').strip('\x00')
+                    except UnicodeDecodeError:
+                        fmt_val = "<binary>"
+            
+                if not isinstance(fmt_val, (str, int, float, bool, type(None))):
+                    fmt_val = str(fmt_val)
+
+                exif_data[tag_str] = fmt_val
+
+    # 5. Parse Date (Priority Logic)
+    for date_tag in DATE_TAGS_PRIORITY:
+        if date_tag in exif_data:
+            date_str = exif_data[date_tag]
+            try:
+                # Clean up common garbage chars
+                clean_str = str(date_str).replace('\x00', '').strip()
+                # Standard EXIF: "YYYY:MM:DD HH:MM:SS"
+                taken_at = datetime.strptime(clean_str, "%Y:%m:%d %H:%M:%S")
+                break # Stop once we find the highest priority valid date
+            except ValueError:
+                continue
 
     return exif_data, taken_at, raw_exif
-
-def generate_time_tags(dt: datetime) -> list[str]:
-    """Helper to convert datetime into discrete tags."""
-    if not dt:
-        return []
-    
-    tags = []
-    # Year & Month
-    tags.append(f"{dt.year}年")
-    tags.append(f"{dt.month}月")
-    
-    # Season (only for Northern Hemisphere)
-    month = dt.month
-    if month in [3, 4, 5]: tags.append("春季")
-    elif month in [6, 7, 8]: tags.append("夏季")
-    elif month in [9, 10, 11]: tags.append("秋季")
-    else: tags.append("冬季")
-        
-    # Time of day
-    hour = dt.hour
-    if 5 <= hour < 12: tags.append("上午")
-    elif 12 <= hour < 18: tags.append("下午")
-    else: tags.append("晚上")
-        
-    return tags
 
 def load_visual_image(path):
     """
@@ -342,6 +390,87 @@ def load_visual_image(path):
     else:
         # JPG, PNG, HEIC, JXL, etc.
         return Image.open(path)
+
+
+def construct_rag_text(image: models.Image) -> str:
+    """
+    Generates a rich natural language description of the image 
+    based on all available metadata (DB, EXIF, AI, Time, Location).
+    """
+    parts = []
+
+    # Basic Metadata
+    if image.title: 
+        parts.append(f"标题是 {image.title}")
+    if image.description: 
+        parts.append(f"内容: {image.description}")
+    if image.original_filename:
+        parts.append(f"文件名: {image.original_filename}")
+    
+    # Tags
+    tag_names = [t.name for t in image.tags]
+    if tag_names: 
+        parts.append(f"标签: {', '.join(tag_names)}")
+    
+    # Time & Location
+    if image.taken_at: 
+        dt = image.taken_at
+        date_str = dt.strftime('%Y年%m月%d日')
+        time_of_day = _get_time_description(dt)
+        season = _get_season_description(dt)
+        weekday = dt.weekday()
+        week_days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        time_desc = f"拍摄于{date_str}，{season}的{week_days[weekday]}{time_of_day}"
+        parts.append(time_desc)
+    if image.location_name: 
+        parts.append(f"地点位于 {image.location_name}")
+    
+    # EXIF Tech Spec
+    if image.exif_data:
+        exif = image.exif_data
+        
+        # Camera
+        make = exif.get('Make', '').strip()
+        model = exif.get('Model', '').strip()
+        if make or model:
+            camera_str = f"{make} {model}".strip()
+            if make in model:
+                camera_str = model 
+            parts.append(f"由 {camera_str} 拍摄")
+
+        # Lens
+        lens = exif.get('LensModel', '') or exif.get('LensID', '')
+        if lens:
+            parts.append(f"使用镜头 {lens}")
+
+        # Params
+        params = []
+        f_num = exif.get('FNumber')
+        iso = exif.get('ISOSpeedRatings')
+        if isinstance(iso, list):
+            iso = iso[0] 
+        
+        if f_num:
+            params.append(f"光圈 {f_num}")
+        if iso:
+            params.append(f"ISO {iso}")
+        
+        if params:
+            parts.append(f"拍摄参数: {', '.join(params)}")
+    
+    # Resolution
+    if image.resolution_width and image.resolution_height:
+        w, h = image.resolution_width, image.resolution_height
+        if w > h:
+            parts.append("构图: 横构图")
+        elif h > w:
+            parts.append("构图: 竖构图")
+        else:
+            parts.append("构图: 方形构图")
+    
+    rag_text = "。".join(parts)
+    return rag_text if rag_text else "图片"
+
 
 @celery_app.task(bind=True, max_retries=3)
 def process_image_core(self, image_id: int):
@@ -387,7 +516,7 @@ def process_image_core(self, image_id: int):
             res_w, res_h = img.size
             
             # Thumbnail
-            MAX_SIZE = (800, 800)
+            MAX_SIZE = (1600, 1600)
             thumb = img.copy()
             thumb.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
             
@@ -507,8 +636,8 @@ def enrich_ai_models(self, image_id: int, lat: float = None, lon: float = None):
         with load_visual_image(image.storage_path) as image_file:
             if image_file.mode != 'RGB':
                 image_file = image_file.convert('RGB')
-            if max(image_file.size) > 2048:
-                image_file.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            if max(image_file.size) > 800:
+                image_file.thumbnail((800, 800), Image.Resampling.LANCZOS)
             buffer = io.BytesIO()
             image_file.save(buffer, format="JPEG", quality=85)
             base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -535,8 +664,8 @@ def enrich_ai_models(self, image_id: int, lat: float = None, lon: float = None):
 
         Tasks:
         1. **caption**: A short description in Simplified Chinese (简体中文). You are encouraged to use "，" to make the caption clear and coherent.
-        2. **tags**: 3-5 keywords in Simplified Chinese (简体中文) describing the objects or scene. Any location/administrative name must be excluded from tags.
-        3. **location_zh**: Based on the visual scene and the provided GPS/Rough Location, identify the precise location name in Simplified Chinese (e.g., "杭州市西湖区雷峰塔"). If uncertain, use the administrative name (e.g., "日本大阪"). Keep this field empty only if no location context is provided.
+        2. **tags**: 3-5 keywords in Simplified Chinese (简体中文) describing the objects or scene, and sorted by importance. Any location/administrative name must be excluded from tags.
+        3. **location_zh**: Based on the visual scene and the provided GPS/Rough Location, identify the precise location name in Simplified Chinese (e.g., "中国，浙江省，杭州市，雷峰塔"). If uncertain, use the administrative name (e.g., "日本，大阪市"). Keep this field empty only if no location context is provided.
         
         Return JSON format ONLY:
         {{
@@ -646,25 +775,7 @@ def build_rag_index():
         for image in candidates:
             try:
                 # Construct RAG Source Text
-                tag_names = [t.name for t in image.tags]
-                
-                parts = []
-                if image.title: 
-                    parts.append(f"标题: {image.title}")
-                if image.original_filename:
-                    parts.append(f"文件名: {image.original_filename}")
-                if image.taken_at: 
-                    parts.append(f"时间: {image.taken_at.strftime('%Y-%m-%d')}")
-                if image.location_name: 
-                    parts.append(f"地点: {image.location_name}")
-                if tag_names: 
-                    parts.append(f"标签: {', '.join(tag_names)}")
-                if image.description: 
-                    parts.append(f"描述: {image.description}")
-                
-                rag_text = "。".join(parts)
-                if not rag_text: 
-                    rag_text = "图片"
+                rag_text = construct_rag_text(image)
 
                 # Generate Embedding
                 embedding = ai.generate_embedding_sync(rag_text)

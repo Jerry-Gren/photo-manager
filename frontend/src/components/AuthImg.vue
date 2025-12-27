@@ -83,7 +83,7 @@ img {
 .skeleton-loader {
   position: absolute;
   inset: 0;
-  background: #27272a;
+  background: rgba(0, 0, 0, 0);
 }
 
 .shimmer {

@@ -1,7 +1,21 @@
+export type JSONValue =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: JSONValue }
+  | JSONValue[]
+
 export interface Tag {
   id: number
   name: string
   tag_type: string // 'user', 'derived_time', 'exif_location', 'ai_generated'
+}
+
+export interface AIAnalysisData {
+  caption: string
+  tags: string[]
+  location_zh?: string
 }
 
 export interface ImageMeta {
@@ -24,6 +38,9 @@ export interface ImageMeta {
   resolution_width?: number
   resolution_height?: number
 
+  ai_analysis?: AIAnalysisData | null
+  exif_data?: Record<string, JSONValue> | null
+
   tags: Tag[]
 
   // UI Helper (frontend only)
@@ -33,8 +50,12 @@ export interface ImageMeta {
 export interface ImageSearchParams {
   skip?: number
   limit?: number
+  q?: string
   tags?: string[]
   status?: string
+  date_field?: 'taken_at' | 'uploaded_at'
+  start_date?: string
+  end_date?: string
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }

@@ -104,6 +104,8 @@ class Image(ImageBase):
     resolution_width: int | None = None
     resolution_height: int | None = None
     
+    exif_data: dict | None = None
+    
     # Flags
     rag_indexed: bool
 

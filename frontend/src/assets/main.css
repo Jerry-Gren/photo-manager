@@ -47,20 +47,31 @@
 }
 
 /* Custom Input Styles */
-.custom-input .el-input__wrapper {
+.custom-input .el-input__wrapper,
+.custom-input .el-textarea__inner {
   background-color: var(--input-bg) !important;
   box-shadow: 0 0 0 1px var(--input-border) !important;
   border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.custom-input .el-input__wrapper {
   padding: 1px 15px;
   height: 46px;
-  transition: all 0.2s ease;
+}
+
+.custom-input .el-textarea__inner {
+  padding: 12px 15px;
+  color: var(--text-main) !important;
+  font-family: inherit;
 }
 
 .custom-input .el-input__inner {
   color: var(--text-main) !important;
 }
 
-.custom-input .el-input__inner::placeholder {
+.custom-input .el-input__inner::placeholder,
+.custom-input .el-textarea__inner::placeholder {
   color: var(--text-placeholder) !important;
 }
 
@@ -68,16 +79,19 @@
   color: var(--text-sub) !important;
 }
 
-.custom-input .el-input__wrapper.is-focus {
+.custom-input .el-input__wrapper.is-focus,
+.custom-input .el-textarea__inner:focus {
   background-color: var(--input-focus-bg) !important;
   box-shadow: 0 0 0 2px var(--el-color-primary) !important;
+  outline: none;
 }
 
 .custom-input .el-input__wrapper.is-focus .el-input__prefix-inner {
   color: var(--el-color-primary);
 }
 
-.custom-input .el-input__wrapper:hover:not(.is-focus) {
+.custom-input .el-input__wrapper:hover:not(.is-focus),
+.custom-input .el-textarea__inner:hover:not(:focus) {
   background-color: rgba(255, 255, 255, 0.08) !important;
 }
 
@@ -128,4 +142,56 @@
 .text-muted {
   color: var(--text-sub);
   opacity: 0.8;
+}
+
+/* Select Dropdown & Date Picker Panel */
+.el-popper.is-light,
+.el-picker__popper.el-popper {
+  background: rgba(30, 30, 30, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+  color: var(--text-main) !important;
+}
+
+/* Dropdown Items */
+.el-select-dropdown__item {
+  color: var(--text-secondary) !important;
+}
+
+.el-select-dropdown__item.hover,
+.el-select-dropdown__item:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.el-select-dropdown__item.selected {
+  color: var(--primary-color) !important;
+  font-weight: 600;
+}
+
+/* Date Picker Content */
+.el-date-table td.available:hover {
+  color: var(--primary-color) !important;
+}
+
+.el-date-table td.current:not(.disabled) .el-date-table-cell__text {
+  background-color: var(--primary-color) !important;
+}
+
+.el-date-table td.today .el-date-table-cell__text {
+  color: var(--primary-color) !important;
+  font-weight: bold;
+}
+
+.el-picker-panel__icon-btn {
+  color: var(--text-muted) !important;
+}
+
+.el-date-picker__header-label {
+  color: var(--text-main) !important;
+}
+
+/* Arrows */
+.el-popper__arrow::before {
+  background: rgba(30, 30, 30, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
 }

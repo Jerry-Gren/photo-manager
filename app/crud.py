@@ -6,7 +6,7 @@ perform operations on the models.
 """
 
 from sqlalchemy.orm import Session, defer
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 from . import models
@@ -171,6 +171,8 @@ def get_images(
     skip: int = 0, 
     limit: int = 50,
     tags: list[str] = None,
+    search_query: str = None,
+    date_field: str = "taken_at",
     start_date: datetime = None,
     end_date: datetime = None,
     sort_by: str = "uploaded_at",
@@ -182,12 +184,13 @@ def get_images(
     
     Flow:
     1. Filter by user_id and status.
-    2. Filter by Time Range (if provided).
+    2. General Search
     3. Filter by Tags (image must have all provided tags).
-    4. Apply Sorting.
-    5. Apply Pagination.
+    4. Filter by Time Range (if provided).
+    5. Apply Sorting.
+    6. Apply Pagination.
     """
-    # Base query
+    # 1. Base query
     query = db.query(models.Image).options(
         defer(models.Image.exif_data),
         defer(models.Image.ai_analysis),
@@ -196,13 +199,20 @@ def get_images(
     if status:
         query = query.filter(models.Image.status == status)
 
-    # 1. Date Range Filter
-    if start_date:
-        query = query.filter(models.Image.taken_at >= start_date)
-    if end_date:
-        query = query.filter(models.Image.taken_at <= end_date)
-
-    # 2. Tag Filter (Intersection / AND Logic)
+    # 2. General Search
+    if search_query:
+        search_term = f"%{search_query}%"
+        query = query.outerjoin(models.Image.tags).filter(
+            or_(
+                models.Image.title.ilike(search_term),
+                models.Image.description.ilike(search_term),
+                models.Image.original_filename.ilike(search_term),
+                models.Image.location_name.ilike(search_term),
+                models.Tag.name.ilike(search_term)
+            )
+        ).distinct()
+    
+    # 3. Tag Filter (Intersection / AND Logic)
     if tags and len(tags) > 0:
         # Join with tags table
         query = query.join(models.Image.tags)
@@ -214,8 +224,22 @@ def get_images(
         # e.g., if searching for ["Winter", "Dog"], the image must match both.
         query = query.having(func.count(models.Tag.id) == len(tags))
 
-    # 3. Sorting
-    sort_attr = getattr(models.Image, sort_by, models.Image.uploaded_at)
+    # 4. Date Range Filter
+    target_date_column = getattr(models.Image, date_field, models.Image.taken_at)
+    
+    if start_date:
+        query = query.filter(target_date_column >= start_date)
+    if end_date:
+        query = query.filter(target_date_column <= end_date)
+
+    # 5. Sorting
+    if sort_by == "file_size":
+        sort_attr = models.Image.file_size
+    elif sort_by == "resolution":
+        sort_attr = models.Image.resolution_width * models.Image.resolution_height
+    else:
+        sort_attr = getattr(models.Image, sort_by, models.Image.uploaded_at)
+
     if sort_order == "desc":
         query = query.order_by(sort_attr.desc())
     else:
@@ -224,5 +248,5 @@ def get_images(
     # Secondary sort by ID for stability
     query = query.order_by(models.Image.id.desc())
 
-    # 4. Pagination
+    # 6. Pagination
     return query.offset(skip).limit(limit).all()

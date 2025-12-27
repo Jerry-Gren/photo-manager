@@ -5,15 +5,19 @@ import { useUserStore } from '@/stores/user'
 import { toast } from '@/utils/toast'
 import LoadingButton from '@/components/LoadingButton.vue'
 import AuthImg from '@/components/AuthImg.vue'
+import UploadModal from '@/components/UploadModal.vue'
+import ImageDetail from '@/components/ImageDetail.vue'
+import FilterPanel from '@/components/FilterPanel.vue'
+import ChatPanel from '@/components/ChatPanel.vue'
 import { imageApi } from '@/api/image'
-import type { ImageMeta } from '@/types'
+import type { ImageMeta, ImageSearchParams } from '@/types'
 import {
   Picture,
   Search,
   Upload,
-  Setting,
   SwitchButton,
-  Expand
+  Expand,
+  Filter
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -34,6 +38,24 @@ const hasMore = ref(true)
 const skip = ref(0)
 const limit = 20
 
+/* Modal State */
+const showUploadModal = ref(false)
+const showDetailModal = ref(false)
+const currentImageId = ref<number | null>(null)
+const allowDetailNav = ref(true)
+
+/* Filter State */
+interface FilterState {
+  tags?: string[]
+  start_date?: Date
+  end_date?: Date
+  sort_by?: string
+  sort_order?: 'asc' | 'desc'
+  date_field?: 'taken_at' | 'uploaded_at'
+}
+const showFilters = ref(false)
+const activeFilters = ref<FilterState>({})
+
 /* Infinite Scroll */
 const scrollContainer = ref<HTMLElement | null>(null)
 
@@ -44,6 +66,20 @@ const checkMobile = () => {
     showMobileMenu.value = false
     isSearchFocused.value = false
   }
+}
+
+const handleGlobalKeydown = (e: KeyboardEvent) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+
+    if (showUploadModal.value || showDetailModal.value) return
+
+    toggleSearch()
+  }
+}
+
+const handleSearchEsc = (e: Event) => {
+  (e.target as HTMLInputElement).blur()
 }
 
 /**
@@ -63,15 +99,38 @@ const fetchImages = async (reset = false) => {
   }
 
   try {
-    const res = await imageApi.getList({
+    // 基础参数
+    const params: ImageSearchParams = {
       skip: skip.value,
       limit: limit,
       status: 'active',
-      // Future: tags: searchQuery.value ? [searchQuery.value] : undefined
-    })
+      tags: [],
+      date_field: activeFilters.value.date_field || 'taken_at'
+    }
+
+    if (searchQuery.value) {
+      params.q = searchQuery.value
+    }
+
+    if (activeFilters.value.tags && activeFilters.value.tags.length > 0) {
+      const existing = params.tags || []
+      params.tags = [...new Set([...existing, ...activeFilters.value.tags])]
+    }
+
+    if (activeFilters.value.start_date) {
+      params.start_date = activeFilters.value.start_date.toISOString()
+    }
+    if (activeFilters.value.end_date) {
+      const endDate = new Date(activeFilters.value.end_date)
+      endDate.setHours(23, 59, 59, 999)
+      params.end_date = endDate.toISOString()
+    }
+    if (activeFilters.value.sort_by) params.sort_by = activeFilters.value.sort_by
+    if (activeFilters.value.sort_order) params.sort_order = activeFilters.value.sort_order
+
+    const res = await imageApi.getList(params)
 
     const newImages = res.data
-
     if (newImages.length < limit) {
       hasMore.value = false
     }
@@ -87,6 +146,11 @@ const fetchImages = async (reset = false) => {
   }
 }
 
+const handleFilterChange = (filters: FilterState) => {
+  activeFilters.value = filters
+  fetchImages(true)
+}
+
 /**
  * Infinite Scroll Handler
  * Triggers fetch when scrolling near the bottom.
@@ -99,14 +163,52 @@ const handleScroll = (e: Event) => {
   }
 }
 
+const handlePrev = () => {
+  const idx = images.value.findIndex(img => img.id === currentImageId.value)
+
+  if (idx > 0) {
+    const prevImg = images.value[idx - 1]
+    if (prevImg) {
+      currentImageId.value = prevImg.id
+    }
+  } else {
+    toast.info('已经是第一张了')
+  }
+}
+
+const handleNext = () => {
+  const idx = images.value.findIndex(img => img.id === currentImageId.value)
+
+  if (idx === images.value.length - 1) {
+    if (hasMore.value) {
+      fetchImages().then(() => {
+        const nextImg = images.value[idx + 1]
+        if (nextImg) {
+          currentImageId.value = nextImg.id
+        }
+      })
+    } else {
+      toast.info('已经是最后一张了')
+    }
+  }
+  else if (idx < images.value.length - 1) {
+    const nextImg = images.value[idx + 1]
+    if (nextImg) {
+      currentImageId.value = nextImg.id
+    }
+  }
+}
+
 onMounted(() => {
   checkMobile()
   window.addEventListener('resize', checkMobile)
+  window.addEventListener('keydown', handleGlobalKeydown)
   fetchImages(true)
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', checkMobile)
+  window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
 const handleLogout = () => {
@@ -116,12 +218,37 @@ const handleLogout = () => {
 }
 
 const handleUpload = () => {
-  toast.info('上传功能即将开启')
+  showUploadModal.value = true
+}
+
+const handleUploadSuccess = () => {
+  fetchImages(true)
+}
+
+const handleImageClick = (id: number) => {
+  currentImageId.value = id
+  allowDetailNav.value = true
+  showDetailModal.value = true
+}
+
+const handleChatImageClick = (id: number) => {
+  currentImageId.value = id
+  allowDetailNav.value = false
+  showDetailModal.value = true
+}
+
+const handleDetailRefresh = () => {
+  fetchImages(true)
+}
+
+const handleDeleteFromList = (id: number) => {
+  images.value = images.value.filter(img => img.id !== id)
 }
 
 const toggleSearch = () => {
-  if (!isMobile.value) return
-  isSearchFocused.value = true
+  if (isMobile.value) {
+    isSearchFocused.value = true
+  }
   nextTick(() => {
     searchInputRef.value?.focus()
   })
@@ -185,7 +312,7 @@ const getDisplayLocation = (img: ImageMeta) => {
 
           <div class="user-mini-card">
             <el-avatar :size="40" class="avatar-glow">{{ userStore.user?.username.charAt(0).toUpperCase() || 'U'
-            }}</el-avatar>
+              }}</el-avatar>
             <div class="meta">
               <div class="name">{{ userStore.user?.username || 'Guest' }}</div>
               <div class="role">普通用户</div>
@@ -226,7 +353,7 @@ const getDisplayLocation = (img: ImageMeta) => {
         <div class="content-panel premium-glass">
           <div class="ambient-light"></div>
 
-          <div class="stage-header">
+          <div class="stage-header" v-if="activeMenu !== 'smart-search'">
 
             <div class="search-capsule"
               :class="{ 'mobile-collapsed': isMobile && !isSearchFocused && !searchQuery, 'mobile-expanded': isMobile && isSearchFocused }"
@@ -235,8 +362,8 @@ const getDisplayLocation = (img: ImageMeta) => {
                 <Search />
               </el-icon>
 
-              <input ref="searchInputRef" v-model="searchQuery" type="text" placeholder="Search..."
-                @blur="handleSearchBlur" @keyup.enter="fetchImages(true)" />
+              <input ref="searchInputRef" v-model="searchQuery" type="text" placeholder="搜索...（文件名、标签、标题、描述、地点）"
+                @blur="handleSearchBlur" @keyup.enter="fetchImages(true)" @keydown.esc="handleSearchEsc" />
               <div class="shortcut-hint" v-if="!isMobile">⌘K</div>
             </div>
 
@@ -247,9 +374,9 @@ const getDisplayLocation = (img: ImageMeta) => {
                 </el-icon>
               </div>
 
-              <div class="tool-btn square" @click="toast.info('设置')">
+              <div class="tool-btn square" :class="{ 'active': showFilters }" @click="showFilters = !showFilters">
                 <el-icon>
-                  <Setting />
+                  <Filter />
                 </el-icon>
               </div>
 
@@ -262,10 +389,12 @@ const getDisplayLocation = (img: ImageMeta) => {
             </div>
           </div>
 
-          <div ref="scrollContainer" class="stage-body custom-scroll" @scroll="handleScroll">
+          <div ref="scrollContainer" class="stage-body custom-scroll"
+            :class="{ 'chat-mode': activeMenu === 'smart-search' }" @scroll="handleScroll">
             <template v-if="activeMenu === 'gallery'">
+              <FilterPanel v-model="showFilters" @change="handleFilterChange" />
               <div class="gallery-header">
-                <h3>All Photos</h3>
+                <h3>所有图片</h3>
                 <div class="filter-tabs">
                   <span class="tab active">Timeline</span>
                   <span class="tab">Map</span>
@@ -273,15 +402,14 @@ const getDisplayLocation = (img: ImageMeta) => {
               </div>
 
               <div v-if="images.length === 0 && !loading" class="empty-state">
-                <el-icon :size="48" color="#52525b">
+                <el-icon :size="48" color="var(--text-muted)">
                   <Picture />
                 </el-icon>
                 <p>暂无图片，快去上传吧</p>
               </div>
 
               <div class="gallery-grid">
-                <div v-for="img in images" :key="img.id" class="photo-card"
-                  @click="toast.info(`Clicked Image ${img.id}`)">
+                <div v-for="img in images" :key="img.id" class="photo-card" @click="handleImageClick(img.id)">
                   <div class="image-wrapper">
                     <AuthImg class="img" :src="imageApi.getThumbnailUrl(img.id)" :alt="img.original_filename" />
 
@@ -315,15 +443,15 @@ const getDisplayLocation = (img: ImageMeta) => {
             </template>
 
             <template v-else-if="activeMenu === 'smart-search'">
-              <div class="chat-placeholder">
-                <h2>AI Smart Search</h2>
-                <p>Chat interface coming soon...</p>
-              </div>
+              <ChatPanel @view-image="handleChatImageClick" />
             </template>
           </div>
         </div>
       </main>
     </div>
+    <UploadModal v-model="showUploadModal" @success="handleUploadSuccess" />
+    <ImageDetail v-model="showDetailModal" :image-id="currentImageId" :show-nav="allowDetailNav"
+      @refresh="handleDetailRefresh" @delete="handleDeleteFromList" @prev="handlePrev" @next="handleNext" />
   </div>
 </template>
 
@@ -821,6 +949,11 @@ const getDisplayLocation = (img: ImageMeta) => {
   min-height: 0;
   position: relative;
   z-index: 20;
+
+  &.chat-mode {
+    padding: 0;
+    overflow: hidden;
+  }
 }
 
 /* Gallery Header */
@@ -1093,5 +1226,11 @@ const getDisplayLocation = (img: ImageMeta) => {
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
+}
+
+.tool-btn.active {
+  background: rgba(249, 115, 22, 0.2) !important;
+  color: var(--primary-color) !important;
+  border-color: var(--primary-color) !important;
 }
 </style>

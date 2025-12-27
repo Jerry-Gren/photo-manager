@@ -20,6 +20,7 @@ Pillow
 pillow-heif
 pillow-jxl-plugin
 rawpy
+python-magic==0.4.27
 
 # Async Task Queue
 celery

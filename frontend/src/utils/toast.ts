@@ -22,7 +22,7 @@ const remove = (id: number) => {
   }
 }
 
-const show = (content: string, type: ToastType = 'info', duration = 3000) => {
+const show = (content: string, type: ToastType = 'info', duration = 3000): number => {
   const id = idCounter++
   const toast: ToastItem = { id, type, content, duration }
 
@@ -33,6 +33,8 @@ const show = (content: string, type: ToastType = 'info', duration = 3000) => {
       remove(id)
     }, duration)
   }
+
+  return id
 }
 
 export const toast = {
