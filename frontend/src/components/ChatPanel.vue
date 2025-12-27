@@ -513,6 +513,7 @@ onMounted(() => {
     .gemini-icon {
       font-size: 20px;
       background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      background-clip: text;
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       filter: drop-shadow(0 0 8px rgba(79, 172, 254, 0.4));
